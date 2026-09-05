@@ -127,7 +127,12 @@ export function NetworkMap({
   const selectedLayerRef = useRef<LeafletLayerGroup | null>(null);
   const planeLayerRef = useRef<LeafletLayerGroup | null>(null);
   const flightMarkersRef = useRef<Map<string, FlightMarker>>(new Map());
+  const onSelectAirportRef = useRef(onSelectAirport);
+  const onSelectRouteRef = useRef(onSelectRoute);
   const [mapReady, setMapReady] = useState(false);
+
+  useEffect(() => { onSelectAirportRef.current = onSelectAirport; }, [onSelectAirport]);
+  useEffect(() => { onSelectRouteRef.current = onSelectRoute; }, [onSelectRoute]);
 
   const resultMap = useMemo(() => new Map(results.map((result) => [result.routeId, result])), [results]);
   const paths = useMemo(() => new Map(airline.routes.map((route) => [route.id, routePath(route)])), [airline.routes]);
@@ -230,7 +235,7 @@ export function NetworkMap({
         opacity: 0.98,
         className: "airport-hover-tooltip",
       });
-      marker.on("click", () => onSelectAirport(airport.iata));
+      marker.on("click", () => onSelectAirportRef.current(airport.iata));
       marker.addTo(group);
     });
 
@@ -241,7 +246,7 @@ export function NetworkMap({
       group.remove();
       if (worldAirportsLayerRef.current === group) worldAirportsLayerRef.current = null;
     };
-  }, [mapReady, onSelectAirport]);
+  }, [mapReady]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -279,7 +284,7 @@ export function NetworkMap({
         opacity: 1,
         className: isHub ? "network-airport-label hub-airport-label" : "network-airport-label",
       });
-      marker.on("click", () => onSelectAirport(code));
+      marker.on("click", () => onSelectAirportRef.current(code));
       marker.addTo(group);
     });
 
@@ -288,7 +293,7 @@ export function NetworkMap({
       group.remove();
       if (networkLayerRef.current === group) networkLayerRef.current = null;
     };
-  }, [airline.hub, mapReady, networkCodes, onSelectAirport]);
+  }, [airline.hub, mapReady, networkCodes]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -324,7 +329,7 @@ export function NetworkMap({
         sticky: true,
         className: "route-hover-tooltip",
       });
-      line.on("click", () => onSelectRoute(route.id));
+      line.on("click", () => onSelectRouteRef.current(route.id));
       line.addTo(group);
     });
 
@@ -333,7 +338,7 @@ export function NetworkMap({
       group.remove();
       if (routeLayerRef.current === group) routeLayerRef.current = null;
     };
-  }, [airline.routes, mapReady, onSelectRoute, paths, resultMap, selectedRouteId]);
+  }, [airline.routes, mapReady, paths, resultMap, selectedRouteId]);
 
   useEffect(() => {
     const map = mapRef.current;
