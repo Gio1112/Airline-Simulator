@@ -26,3 +26,47 @@ body {
 button, input, select { font: inherit; }
 button { cursor: pointer; }
 ::selection { background: #334155; }
+
+.maplibregl-map { font-family: Arial, Helvetica, sans-serif; }
+.maplibregl-ctrl-group {
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 10px;
+  background: rgba(8,11,16,0.88);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+}
+.maplibregl-ctrl-group button { filter: invert(1); }
+.maplibregl-ctrl-attrib {
+  border-radius: 6px 0 0 0;
+  background: rgba(8,11,16,0.75) !important;
+  color: #cbd5e1;
+}
+.maplibregl-ctrl-attrib a { color: #7dd3fc; }
+.maplibregl-popup-content {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 16px 44px rgba(0,0,0,0.35);
+}
+.maplibregl-popup-tip { border-top-color: var(--panel) !important; }
+
+.flight-marker {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 1px solid rgba(255,255,255,0.55);
+  border-radius: 999px;
+  background: rgba(8,11,16,0.88);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.45);
+  pointer-events: none;
+}
+.flight-marker-glyph {
+  display: block;
+  color: #f8fafc;
+  font-size: 16px;
+  line-height: 1;
+  transform-origin: center;
+  will-change: transform;
+}

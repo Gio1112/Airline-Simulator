@@ -2,12 +2,14 @@ export type CabinClass = "economy" | "business";
 
 export type Airport = {
   iata: string;
+  icao?: string;
   city: string;
   name: string;
   country: string;
   lat: number;
   lon: number;
   demand: number;
+  type?: "large_airport" | "medium_airport";
 };
 
 export type AircraftType = {
