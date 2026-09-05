@@ -21,7 +21,6 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "latest",
-    "@types/apple-mapkit": "latest",
     "@types/leaflet": "latest",
     "@types/node": "latest",
     "@types/react": "latest",
