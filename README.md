@@ -26,6 +26,21 @@ npm run dev
 
 Open `http://localhost:3000`.
 
+## Deploy to Cloudflare Pages
+
+This project is configured as a static Next.js export, so the current prototype can be hosted directly on Cloudflare Pages.
+
+1. Open Cloudflare Dashboard → Workers & Pages.
+2. Choose **Create application** → **Pages** → **Import an existing Git repository**.
+3. Select `Gio1112/Airline-Simulator`.
+4. Use the **Next.js (Static HTML Export)** framework preset.
+5. Set the production branch to `main` after the Cloudflare deployment PR is merged.
+6. Build command: `npx next build`
+7. Build output directory: `out`
+8. Deploy.
+
+Cloudflare will give the project a `*.pages.dev` address and rebuild it automatically whenever the production branch changes. Pull requests can also receive preview deployments.
+
 ## Optional Supabase setup
 
 Copy `.env.example` to `.env.local` and configure your Supabase keys. The starter migration lives at `supabase/migrations/0001_initial.sql`.
