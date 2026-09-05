@@ -1,20 +1,33 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { aircraftTypeById, airportByIata, airports } from "@/game/data";
-import { distanceKm, estimateDailyDemand } from "@/game/simulation";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { airportByIata, airports } from "@/game/data";
+import { distanceKm } from "@/game/simulation";
 import type { Airline, Route, RouteResult } from "@/game/types";
 
 type LeafletModule = typeof import("leaflet");
 type LeafletMap = import("leaflet").Map;
-type LeafletLayer = import("leaflet").Layer;
 type LeafletLayerGroup = import("leaflet").LayerGroup;
 type LeafletMarker = import("leaflet").Marker;
 
-const DEFAULT_PMTILES_URL = "https://data.source.coop/protomaps/openstreetmap/v4.pmtiles";
-const PMTILES_URL = process.env.NEXT_PUBLIC_PM_TILES_URL || DEFAULT_PMTILES_URL;
-const money = (value: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(value);
-const pct = (value: number) => `${Math.round(value * 100)}%`;
+type FlightMarker = {
+  marker: LeafletMarker;
+  routeId: string;
+  markerIndex: number;
+  markerCount: number;
+};
+
+type Props = {
+  airline: Airline;
+  results: RouteResult[];
+  selectedAirportCode: string | null;
+  selectedRouteId: string | null;
+  onSelectAirport: (iata: string) => void;
+  onSelectRoute: (routeId: string) => void;
+  showAirports?: boolean;
+};
+
+const PM_TILES_URL = process.env.NEXT_PUBLIC_PM_TILES_URL || "https://data.source.coop/protomaps/openstreetmap/v4.pmtiles";
 
 function toRadians(value: number) {
   return (value * Math.PI) / 180;
@@ -27,7 +40,6 @@ function toDegrees(value: number) {
 function unwrapLongitudes(points: [number, number][]) {
   if (points.length < 2) return points;
   const unwrapped: [number, number][] = [points[0]];
-
   for (let index = 1; index < points.length; index += 1) {
     let [lon, lat] = points[index];
     const previousLon = unwrapped[index - 1][0];
@@ -35,11 +47,10 @@ function unwrapLongitudes(points: [number, number][]) {
     while (lon - previousLon < -180) lon += 360;
     unwrapped.push([lon, lat]);
   }
-
   return unwrapped;
 }
 
-function greatCircle(origin: [number, number], destination: [number, number], steps = 64) {
+function greatCircle(origin: [number, number], destination: [number, number], steps = 72) {
   const [lon1, lat1] = origin.map(toRadians);
   const [lon2, lat2] = destination.map(toRadians);
   const dot = Math.sin(lat1) * Math.sin(lat2) + Math.cos(lat1) * Math.cos(lat2) * Math.cos(lon2 - lon1);
@@ -48,7 +59,6 @@ function greatCircle(origin: [number, number], destination: [number, number], st
 
   const sinAngle = Math.sin(angle);
   const points: [number, number][] = [];
-
   for (let index = 0; index <= steps; index += 1) {
     const t = index / steps;
     const a = Math.sin((1 - t) * angle) / sinAngle;
@@ -58,8 +68,14 @@ function greatCircle(origin: [number, number], destination: [number, number], st
     const z = a * Math.sin(lat1) + b * Math.sin(lat2);
     points.push([toDegrees(Math.atan2(y, x)), toDegrees(Math.atan2(z, Math.sqrt(x * x + y * y)))]);
   }
-
   return unwrapLongitudes(points);
+}
+
+function routePath(route: Route) {
+  const origin = airportByIata(route.origin);
+  const destination = airportByIata(route.destination);
+  if (!origin || !destination) return [];
+  return greatCircle([origin.lon, origin.lat], [destination.lon, destination.lat]);
 }
 
 function pointOnPath(path: [number, number][], progress: number) {
@@ -83,57 +99,38 @@ function bearingBetween(a: [number, number], b: [number, number]) {
   return (toDegrees(Math.atan2(y, x)) + 360) % 360;
 }
 
-function routePath(route: Route) {
-  const origin = airportByIata(route.origin);
-  const destination = airportByIata(route.destination);
-  if (!origin || !destination) return [];
-  return greatCircle([origin.lon, origin.lat], [destination.lon, destination.lat]);
-}
-
-function pathToLeaflet(path: [number, number][]) {
-  return path.map(([lon, lat]) => [lat, lon] as [number, number]);
-}
-
 function hashString(value: string) {
   let hash = 0;
   for (let index = 0; index < value.length; index += 1) hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0;
   return Math.abs(hash);
 }
 
-type FlightMarker = {
-  marker: LeafletMarker;
-  routeId: string;
-  markerIndex: number;
-  markerCount: number;
-};
+function pathToLeaflet(path: [number, number][]) {
+  return path.map(([lon, lat]) => [lat, lon] as [number, number]);
+}
 
-type Props = {
-  airline: Airline;
-  results: RouteResult[];
-  onPlanRoute: (iata: string) => void;
-};
-
-export function NetworkMap({ airline, results, onPlanRoute }: Props) {
+export function NetworkMap({
+  airline,
+  results,
+  selectedAirportCode,
+  selectedRouteId,
+  onSelectAirport,
+  onSelectRoute,
+  showAirports = true,
+}: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const leafletRef = useRef<LeafletModule | null>(null);
   const mapRef = useRef<LeafletMap | null>(null);
-  const basemapLayerRef = useRef<LeafletLayer | null>(null);
   const worldAirportsLayerRef = useRef<LeafletLayerGroup | null>(null);
   const networkLayerRef = useRef<LeafletLayerGroup | null>(null);
   const routeLayerRef = useRef<LeafletLayerGroup | null>(null);
   const selectedLayerRef = useRef<LeafletLayerGroup | null>(null);
   const planeLayerRef = useRef<LeafletLayerGroup | null>(null);
   const flightMarkersRef = useRef<Map<string, FlightMarker>>(new Map());
-
   const [mapReady, setMapReady] = useState(false);
-  const [showAirports, setShowAirports] = useState(true);
-  const [basemapName, setBasemapName] = useState("Protomaps PMTiles");
-  const [selectedAirportCode, setSelectedAirportCode] = useState<string | null>(airline.hub);
-  const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
 
   const resultMap = useMemo(() => new Map(results.map((result) => [result.routeId, result])), [results]);
   const paths = useMemo(() => new Map(airline.routes.map((route) => [route.id, routePath(route)])), [airline.routes]);
-
   const networkCodes = useMemo(() => {
     const codes = new Set<string>([airline.hub]);
     airline.routes.forEach((route) => {
@@ -143,71 +140,48 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
     return codes;
   }, [airline.hub, airline.routes]);
 
-  const fitNetwork = useCallback(() => {
-    const map = mapRef.current;
-    const L = leafletRef.current;
-    if (!map || !L) return;
-
-    const points = [...networkCodes].map((code) => airportByIata(code)).filter(Boolean);
-    if (points.length <= 1) {
-      const hub = airportByIata(airline.hub);
-      if (hub) map.flyTo([hub.lat, hub.lon], 4.5, { duration: 0.7 });
-      return;
-    }
-
-    const bounds = L.latLngBounds(points.map((airport) => [airport!.lat, airport!.lon] as [number, number]));
-    map.flyToBounds(bounds, { padding: [70, 70], maxZoom: 6, duration: 0.7 });
-  }, [airline.hub, networkCodes]);
-
   useEffect(() => {
     let disposed = false;
     let createdMap: LeafletMap | null = null;
 
     void (async () => {
-      const [importedLeaflet, protomaps] = await Promise.all([
-        import("leaflet"),
-        import("protomaps-leaflet"),
-      ]);
-      const L = (((importedLeaflet as unknown as { default?: LeafletModule }).default ?? importedLeaflet) as LeafletModule);
+      const leafletImport = await import("leaflet");
+      const L = (((leafletImport as unknown as { default?: LeafletModule }).default ?? leafletImport) as LeafletModule);
+      const protoImport = await import("protomaps-leaflet");
+      const proto = protoImport as unknown as {
+        leafletLayer?: (options: Record<string, unknown>) => import("leaflet").Layer;
+        default?: { leafletLayer?: (options: Record<string, unknown>) => import("leaflet").Layer };
+      };
+      const leafletLayer = proto.leafletLayer ?? proto.default?.leafletLayer;
+      if (!leafletLayer) throw new Error("Protomaps Leaflet renderer did not load.");
       if (disposed || !containerRef.current) return;
 
       leafletRef.current = L;
       const hub = airportByIata(airline.hub);
       const map = L.map(containerRef.current, {
-        zoomControl: true,
+        zoomControl: false,
         attributionControl: true,
         preferCanvas: true,
-        minZoom: 1,
-        maxZoom: 15,
+        minZoom: 2,
+        maxZoom: 13,
         worldCopyJump: true,
         zoomSnap: 0.25,
       });
 
       createdMap = map;
       mapRef.current = map;
-      map.setView(hub ? [hub.lat, hub.lon] : [39.5, -98.5], hub ? 4.2 : 2.25);
+      map.setView(hub ? [hub.lat, hub.lon] : [39.5, -98.5], hub ? 4.25 : 2.25);
+
+      const basemap = leafletLayer({
+        url: PM_TILES_URL,
+        flavor: "light",
+        lang: "en",
+        maxDataZoom: 15,
+      });
+      basemap.addTo(map);
       map.attributionControl.setPrefix(false);
       map.attributionControl.addAttribution('&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · Protomaps');
-
-      try {
-        const baseLayer = protomaps.leafletLayer({
-          url: PMTILES_URL,
-          flavor: "light",
-          lang: "en",
-        }) as unknown as LeafletLayer;
-        baseLayer.addTo(map);
-        basemapLayerRef.current = baseLayer;
-        setBasemapName(PMTILES_URL === DEFAULT_PMTILES_URL ? "Protomaps PMTiles" : "Self-hosted PMTiles");
-      } catch (error) {
-        console.error("PMTiles basemap failed to initialize; using OSM raster fallback.", error);
-        const fallback = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-          maxZoom: 19,
-          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-        });
-        fallback.addTo(map);
-        basemapLayerRef.current = fallback;
-        setBasemapName("OpenStreetMap fallback");
-      }
+      L.control.zoom({ position: "bottomright" }).addTo(map);
 
       map.whenReady(() => {
         if (disposed) return;
@@ -220,7 +194,6 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
       disposed = true;
       setMapReady(false);
       flightMarkersRef.current.clear();
-      basemapLayerRef.current = null;
       worldAirportsLayerRef.current = null;
       networkLayerRef.current = null;
       routeLayerRef.current = null;
@@ -245,25 +218,19 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
       const large = airport.type === "large_airport";
       const marker = L.circleMarker([airport.lat, airport.lon], {
         renderer,
-        radius: large ? 3.5 : 2.6,
-        weight: large ? 1.1 : 0.8,
-        color: "#ffffff",
-        fillColor: large ? "#185b8f" : "#64748b",
-        fillOpacity: large ? 0.95 : 0.76,
+        radius: large ? 2.9 : 2.1,
+        weight: large ? 0.9 : 0.6,
+        color: "#334155",
+        fillColor: large ? "#334155" : "#64748b",
+        fillOpacity: large ? 0.75 : 0.48,
       });
-
-      marker.bindTooltip(airport.iata, {
+      marker.bindTooltip(`${airport.iata} · ${airport.city}`, {
         sticky: true,
         direction: "top",
-        opacity: 0.96,
+        opacity: 0.98,
         className: "airport-hover-tooltip",
       });
-
-      marker.on("click", () => {
-        setSelectedAirportCode(airport.iata);
-        setSelectedRouteId(null);
-      });
-
+      marker.on("click", () => onSelectAirport(airport.iata));
       marker.addTo(group);
     });
 
@@ -274,13 +241,12 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
       group.remove();
       if (worldAirportsLayerRef.current === group) worldAirportsLayerRef.current = null;
     };
-  }, [mapReady]);
+  }, [mapReady, onSelectAirport]);
 
   useEffect(() => {
     const map = mapRef.current;
     const layer = worldAirportsLayerRef.current;
     if (!mapReady || !map || !layer) return;
-
     if (showAirports) {
       if (!map.hasLayer(layer)) layer.addTo(map);
     } else if (map.hasLayer(layer)) {
@@ -295,33 +261,25 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
 
     networkLayerRef.current?.remove();
     const group = L.layerGroup().addTo(map);
-
     [...networkCodes].forEach((code) => {
       const airport = airportByIata(code);
       if (!airport) return;
       const isHub = code === airline.hub;
-
       const marker = L.circleMarker([airport.lat, airport.lon], {
-        radius: isHub ? 8 : 6,
+        radius: isHub ? 7.5 : 5.5,
         weight: 2,
         color: "#ffffff",
-        fillColor: isHub ? "#fbbf24" : "#0ea5e9",
+        fillColor: isHub ? "#f4c430" : "#0284c7",
         fillOpacity: 1,
       });
-
       marker.bindTooltip(code, {
         permanent: true,
         direction: "bottom",
-        offset: [0, 9],
+        offset: [0, 8],
         opacity: 1,
         className: isHub ? "network-airport-label hub-airport-label" : "network-airport-label",
       });
-
-      marker.on("click", () => {
-        setSelectedAirportCode(code);
-        setSelectedRouteId(null);
-      });
-
+      marker.on("click", () => onSelectAirport(code));
       marker.addTo(group);
     });
 
@@ -330,7 +288,7 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
       group.remove();
       if (networkLayerRef.current === group) networkLayerRef.current = null;
     };
-  }, [airline.hub, mapReady, networkCodes]);
+  }, [airline.hub, mapReady, networkCodes, onSelectAirport]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -339,42 +297,34 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
 
     routeLayerRef.current?.remove();
     const group = L.layerGroup().addTo(map);
-
     airline.routes.forEach((route) => {
       const path = paths.get(route.id) ?? [];
       if (path.length < 2) return;
-
       const result = resultMap.get(route.id);
       const selected = route.id === selectedRouteId;
-      const color = selected ? "#ffffff" : !result ? "#0284c7" : result.profit >= 0 ? "#16a34a" : "#e11d48";
+      const color = selected ? "#f4c430" : !result ? "#0ea5e9" : result.profit >= 0 ? "#16a34a" : "#e11d48";
       const latLngs = pathToLeaflet(path);
 
       L.polyline(latLngs, {
         color: "#ffffff",
-        weight: selected ? 8 : 6,
-        opacity: 0.82,
+        weight: selected ? 7 : 5,
+        opacity: 0.85,
         interactive: false,
         smoothFactor: 1,
       }).addTo(group);
 
       const line = L.polyline(latLngs, {
         color,
-        weight: selected ? 4.5 : 3,
-        opacity: 0.98,
+        weight: selected ? 4 : 2.6,
+        opacity: 0.95,
         interactive: true,
         smoothFactor: 1,
       });
-
       line.bindTooltip(`${route.origin} → ${route.destination}`, {
         sticky: true,
         className: "route-hover-tooltip",
       });
-
-      line.on("click", () => {
-        setSelectedRouteId(route.id);
-        setSelectedAirportCode(null);
-      });
-
+      line.on("click", () => onSelectRoute(route.id));
       line.addTo(group);
     });
 
@@ -383,7 +333,7 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
       group.remove();
       if (routeLayerRef.current === group) routeLayerRef.current = null;
     };
-  }, [airline.routes, mapReady, paths, resultMap, selectedRouteId]);
+  }, [airline.routes, mapReady, onSelectRoute, paths, resultMap, selectedRouteId]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -393,16 +343,17 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
     selectedLayerRef.current?.remove();
     const group = L.layerGroup().addTo(map);
     const airport = selectedAirportCode ? airportByIata(selectedAirportCode) : undefined;
-
     if (airport) {
       L.circleMarker([airport.lat, airport.lon], {
-        radius: 13,
-        weight: 2,
-        color: "#0f172a",
-        fillColor: "#ffffff",
-        fillOpacity: 0.08,
+        radius: 12,
+        weight: 3,
+        color: "#f4c430",
+        fillColor: "#f4c430",
+        fillOpacity: 0.12,
         interactive: false,
       }).addTo(group);
+      const targetZoom = Math.max(6.25, Math.min(8, map.getZoom()));
+      map.flyTo([airport.lat, airport.lon], targetZoom, { duration: 0.55 });
     }
 
     selectedLayerRef.current = group;
@@ -411,6 +362,21 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
       if (selectedLayerRef.current === group) selectedLayerRef.current = null;
     };
   }, [mapReady, selectedAirportCode]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    const L = leafletRef.current;
+    if (!mapReady || !map || !L || !selectedRouteId) return;
+    const path = paths.get(selectedRouteId) ?? [];
+    if (path.length < 2) return;
+    const bounds = L.latLngBounds(pathToLeaflet(path));
+    map.flyToBounds(bounds, {
+      paddingTopLeft: [430, 90],
+      paddingBottomRight: [90, 90],
+      maxZoom: 7,
+      duration: 0.6,
+    });
+  }, [mapReady, paths, selectedRouteId]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -425,9 +391,7 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
       const markerCount = Math.min(3, Math.max(1, Math.ceil(route.weeklyFrequency / 14)));
       const path = paths.get(route.id) ?? [];
       if (path.length < 2) return;
-
       for (let markerIndex = 0; markerIndex < markerCount; markerIndex += 1) {
-        const key = `${route.id}:${markerIndex}`;
         const [lon, lat] = path[0];
         const icon = L.divIcon({
           className: "flight-marker-wrapper",
@@ -435,15 +399,13 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
           iconSize: [30, 30],
           iconAnchor: [15, 15],
         });
-
         const marker = L.marker([lat, lon], {
           icon,
           interactive: false,
           keyboard: false,
           bubblingMouseEvents: false,
         }).addTo(group);
-
-        flightMarkersRef.current.set(key, { marker, routeId: route.id, markerIndex, markerCount });
+        flightMarkersRef.current.set(`${route.id}:${markerIndex}`, { marker, routeId: route.id, markerIndex, markerCount });
       }
     });
 
@@ -459,15 +421,13 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
     if (!mapReady) return;
     let frame = 0;
     let lastPaint = 0;
-
     const animate = (now: number) => {
-      if (now - lastPaint >= 33) {
+      if (now - lastPaint >= 40) {
         lastPaint = now;
         flightMarkersRef.current.forEach((item) => {
           const route = airline.routes.find((candidate) => candidate.id === item.routeId);
           const path = paths.get(item.routeId) ?? [];
           if (!route || path.length < 2) return;
-
           const distance = Math.max(300, distanceKm(route.origin, route.destination));
           const duration = Math.min(180_000, Math.max(55_000, 50_000 + distance * 18));
           const offset = (hashString(item.routeId) % 1000) / 1000 + item.markerIndex / item.markerCount;
@@ -476,97 +436,16 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
           const progress = outbound ? cycle * 2 : (1 - cycle) * 2;
           const point = pointOnPath(path, progress);
           const lookAhead = pointOnPath(path, Math.max(0, Math.min(1, progress + (outbound ? 0.015 : -0.015))));
-
           item.marker.setLatLng([point[1], point[0]]);
           const glyph = item.marker.getElement()?.querySelector<HTMLElement>(".flight-marker-glyph");
           if (glyph) glyph.style.transform = `rotate(${bearingBetween(point, lookAhead) - 45}deg)`;
         });
       }
-
       frame = requestAnimationFrame(animate);
     };
-
     frame = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(frame);
   }, [airline.routes, mapReady, paths]);
 
-  const selectedAirport = selectedAirportCode ? airportByIata(selectedAirportCode) : undefined;
-  const selectedRoute = selectedRouteId ? airline.routes.find((route) => route.id === selectedRouteId) : undefined;
-  const selectedResult = selectedRoute ? resultMap.get(selectedRoute.id) : undefined;
-  const selectedAircraft = selectedRoute ? airline.fleet.find((aircraft) => aircraft.id === selectedRoute.aircraftId) : undefined;
-  const selectedType = selectedAircraft ? aircraftTypeById(selectedAircraft.typeId) : undefined;
-  const selectedAirportRoute = selectedAirport ? airline.routes.find((route) => route.destination === selectedAirport.iata || route.origin === selectedAirport.iata) : undefined;
-
-  return (
-    <section className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--panel)]">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] px-4 py-3">
-        <div>
-          <div className="text-sm font-semibold">Live network</div>
-          <div className="text-xs text-[var(--muted)]">{airports.length.toLocaleString()} mapped airports · {basemapName} · Canvas renderer</div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <button type="button" onClick={() => setShowAirports((value) => !value)} className="rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-xs text-[var(--muted)] hover:text-white">{showAirports ? "Hide airports" : "Show airports"}</button>
-          <button type="button" onClick={fitNetwork} className="rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-xs text-[var(--muted)] hover:text-white">Fit network</button>
-          <button type="button" onClick={() => mapRef.current?.flyTo([18, 0], 2, { duration: 0.7 })} className="rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-xs text-[var(--muted)] hover:text-white">World</button>
-        </div>
-      </div>
-
-      <div className="grid lg:grid-cols-[minmax(0,1fr)_320px]">
-        <div className="relative min-h-[560px] border-b border-[var(--border)] lg:border-b-0 lg:border-r">
-          <div ref={containerRef} className="absolute inset-0" aria-label="Interactive airline network map" />
-          <div className="pointer-events-none absolute bottom-3 left-3 z-[500] flex flex-wrap gap-2 rounded-lg border border-slate-300/80 bg-white/90 px-3 py-2 text-[11px] text-slate-800 shadow-sm backdrop-blur">
-            <span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-amber-400" />Hub</span>
-            <span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-sky-500" />Network</span>
-            <span><i className="mr-1 inline-block h-0.5 w-3 bg-green-600 align-middle" />Profit</span>
-            <span><i className="mr-1 inline-block h-0.5 w-3 bg-rose-600 align-middle" />Loss</span>
-          </div>
-        </div>
-
-        <aside className="min-h-[280px] bg-[var(--panel-2)] p-5">
-          {selectedRoute ? (
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-300">Route</div>
-              <div className="mt-2 font-mono text-2xl">{selectedRoute.origin} → {selectedRoute.destination}</div>
-              <div className="mt-1 text-sm text-[var(--muted)]">{selectedAircraft?.registration ?? "Aircraft"} · {selectedType?.model ?? "Unknown type"}</div>
-              <div className="mt-5 grid grid-cols-2 gap-2 text-sm">
-                <MapStat label="Distance" value={`${distanceKm(selectedRoute.origin, selectedRoute.destination).toLocaleString()} km`} />
-                <MapStat label="Frequency" value={`${selectedRoute.weeklyFrequency}× / week`} />
-                <MapStat label="Fare" value={money(selectedRoute.economyFare)} />
-                <MapStat label="Load factor" value={selectedResult ? pct(selectedResult.loadFactor) : "Not simulated"} />
-                <MapStat label="Passengers" value={selectedResult ? selectedResult.passengers.toLocaleString() : "—"} />
-                <MapStat label="Last profit" value={selectedResult ? money(selectedResult.profit) : "—"} valueClass={selectedResult ? (selectedResult.profit >= 0 ? "text-green-300" : "text-rose-300") : ""} />
-              </div>
-            </div>
-          ) : selectedAirport ? (
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-300">Airport</div>
-              <div className="mt-2 flex items-baseline gap-2"><span className="font-mono text-3xl">{selectedAirport.iata}</span><span className="text-sm text-[var(--muted)]">{selectedAirport.icao ?? ""}</span></div>
-              <div className="mt-2 font-medium">{selectedAirport.name}</div>
-              <div className="mt-1 text-sm text-[var(--muted)]">{selectedAirport.city} · {selectedAirport.country}</div>
-              <div className="mt-5 grid grid-cols-2 gap-2 text-sm">
-                <MapStat label="From hub" value={selectedAirport.iata === airline.hub ? "Hub" : `${distanceKm(airline.hub, selectedAirport.iata).toLocaleString()} km`} />
-                <MapStat label="Market" value={`${estimateDailyDemand(airline.hub, selectedAirport.iata).toLocaleString()} pax/day`} />
-                <MapStat label="Type" value={selectedAirport.type === "large_airport" ? "Large" : "Medium"} />
-                <MapStat label="Status" value={selectedAirportRoute ? "Served" : "Unserved"} valueClass={selectedAirportRoute ? "text-green-300" : ""} />
-              </div>
-              {selectedAirport.iata !== airline.hub && (
-                <button type="button" onClick={() => onPlanRoute(selectedAirport.iata)} className="mt-5 w-full rounded-lg bg-sky-300 px-4 py-3 text-sm font-semibold text-slate-950 hover:bg-sky-200">Plan {airline.hub} → {selectedAirport.iata}</button>
-              )}
-            </div>
-          ) : (
-            <div className="grid min-h-64 place-items-center text-center text-sm text-[var(--muted)]">Click an airport or route on the map.</div>
-          )}
-        </aside>
-      </div>
-    </section>
-  );
-}
-
-function MapStat({ label, value, valueClass = "" }: { label: string; value: string; valueClass?: string }) {
-  return (
-    <div className="rounded-lg border border-[var(--border)] bg-[var(--background)] p-3">
-      <div className="text-[11px] uppercase tracking-wider text-[var(--muted)]">{label}</div>
-      <div className={`mt-1 font-medium ${valueClass}`}>{value}</div>
-    </div>
-  );
+  return <div ref={containerRef} className="absolute inset-0 h-full w-full" aria-label="Interactive airline operations map" />;
 }
