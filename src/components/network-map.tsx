@@ -7,9 +7,12 @@ import type { Airline, Route, RouteResult } from "@/game/types";
 
 type LeafletModule = typeof import("leaflet");
 type LeafletMap = import("leaflet").Map;
+type LeafletLayer = import("leaflet").Layer;
 type LeafletLayerGroup = import("leaflet").LayerGroup;
 type LeafletMarker = import("leaflet").Marker;
 
+const DEFAULT_PMTILES_URL = "https://data.source.coop/protomaps/openstreetmap/v4.pmtiles";
+const PMTILES_URL = process.env.NEXT_PUBLIC_PM_TILES_URL || DEFAULT_PMTILES_URL;
 const money = (value: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(value);
 const pct = (value: number) => `${Math.round(value * 100)}%`;
 
@@ -114,6 +117,7 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const leafletRef = useRef<LeafletModule | null>(null);
   const mapRef = useRef<LeafletMap | null>(null);
+  const basemapLayerRef = useRef<LeafletLayer | null>(null);
   const worldAirportsLayerRef = useRef<LeafletLayerGroup | null>(null);
   const networkLayerRef = useRef<LeafletLayerGroup | null>(null);
   const routeLayerRef = useRef<LeafletLayerGroup | null>(null);
@@ -123,6 +127,7 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
 
   const [mapReady, setMapReady] = useState(false);
   const [showAirports, setShowAirports] = useState(true);
+  const [basemapName, setBasemapName] = useState("Protomaps PMTiles");
   const [selectedAirportCode, setSelectedAirportCode] = useState<string | null>(airline.hub);
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
 
@@ -159,8 +164,11 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
     let createdMap: LeafletMap | null = null;
 
     void (async () => {
-      const imported = await import("leaflet");
-      const L = (((imported as unknown as { default?: LeafletModule }).default ?? imported) as LeafletModule);
+      const [importedLeaflet, protomaps] = await Promise.all([
+        import("leaflet"),
+        import("protomaps-leaflet"),
+      ]);
+      const L = (((importedLeaflet as unknown as { default?: LeafletModule }).default ?? importedLeaflet) as LeafletModule);
       if (disposed || !containerRef.current) return;
 
       leafletRef.current = L;
@@ -169,8 +177,8 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
         zoomControl: true,
         attributionControl: true,
         preferCanvas: true,
-        minZoom: 2,
-        maxZoom: 12,
+        minZoom: 1,
+        maxZoom: 15,
         worldCopyJump: true,
         zoomSnap: 0.25,
       });
@@ -178,13 +186,28 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
       createdMap = map;
       mapRef.current = map;
       map.setView(hub ? [hub.lat, hub.lon] : [39.5, -98.5], hub ? 4.2 : 2.25);
+      map.attributionControl.setPrefix(false);
+      map.attributionControl.addAttribution('&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · Protomaps');
 
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-        subdomains: "abcd",
-        maxZoom: 20,
-        detectRetina: true,
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-      }).addTo(map);
+      try {
+        const baseLayer = protomaps.leafletLayer({
+          url: PMTILES_URL,
+          flavor: "light",
+          lang: "en",
+        }) as unknown as LeafletLayer;
+        baseLayer.addTo(map);
+        basemapLayerRef.current = baseLayer;
+        setBasemapName(PMTILES_URL === DEFAULT_PMTILES_URL ? "Protomaps PMTiles" : "Self-hosted PMTiles");
+      } catch (error) {
+        console.error("PMTiles basemap failed to initialize; using OSM raster fallback.", error);
+        const fallback = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 19,
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+        });
+        fallback.addTo(map);
+        basemapLayerRef.current = fallback;
+        setBasemapName("OpenStreetMap fallback");
+      }
 
       map.whenReady(() => {
         if (disposed) return;
@@ -197,6 +220,7 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
       disposed = true;
       setMapReady(false);
       flightMarkersRef.current.clear();
+      basemapLayerRef.current = null;
       worldAirportsLayerRef.current = null;
       networkLayerRef.current = null;
       routeLayerRef.current = null;
@@ -221,11 +245,11 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
       const large = airport.type === "large_airport";
       const marker = L.circleMarker([airport.lat, airport.lon], {
         renderer,
-        radius: large ? 3.3 : 2.4,
-        weight: large ? 0.9 : 0.6,
-        color: "#0b1220",
-        fillColor: large ? "#e2e8f0" : "#94a3b8",
-        fillOpacity: large ? 0.86 : 0.62,
+        radius: large ? 3.5 : 2.6,
+        weight: large ? 1.1 : 0.8,
+        color: "#ffffff",
+        fillColor: large ? "#185b8f" : "#64748b",
+        fillOpacity: large ? 0.95 : 0.76,
       });
 
       marker.bindTooltip(airport.iata, {
@@ -281,7 +305,7 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
         radius: isHub ? 8 : 6,
         weight: 2,
         color: "#ffffff",
-        fillColor: isHub ? "#fbbf24" : "#38bdf8",
+        fillColor: isHub ? "#fbbf24" : "#0ea5e9",
         fillOpacity: 1,
       });
 
@@ -322,13 +346,13 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
 
       const result = resultMap.get(route.id);
       const selected = route.id === selectedRouteId;
-      const color = selected ? "#ffffff" : !result ? "#38bdf8" : result.profit >= 0 ? "#22c55e" : "#fb7185";
+      const color = selected ? "#ffffff" : !result ? "#0284c7" : result.profit >= 0 ? "#16a34a" : "#e11d48";
       const latLngs = pathToLeaflet(path);
 
       L.polyline(latLngs, {
-        color: "#07111f",
+        color: "#ffffff",
         weight: selected ? 8 : 6,
-        opacity: 0.72,
+        opacity: 0.82,
         interactive: false,
         smoothFactor: 1,
       }).addTo(group);
@@ -336,7 +360,7 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
       const line = L.polyline(latLngs, {
         color,
         weight: selected ? 4.5 : 3,
-        opacity: 0.96,
+        opacity: 0.98,
         interactive: true,
         smoothFactor: 1,
       });
@@ -374,9 +398,9 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
       L.circleMarker([airport.lat, airport.lon], {
         radius: 13,
         weight: 2,
-        color: "#ffffff",
+        color: "#0f172a",
         fillColor: "#ffffff",
-        fillOpacity: 0.05,
+        fillOpacity: 0.08,
         interactive: false,
       }).addTo(group);
     }
@@ -478,7 +502,7 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] px-4 py-3">
         <div>
           <div className="text-sm font-semibold">Live network</div>
-          <div className="text-xs text-[var(--muted)]">{airports.length.toLocaleString()} mapped airports · CARTO basemap · non-WebGL renderer</div>
+          <div className="text-xs text-[var(--muted)]">{airports.length.toLocaleString()} mapped airports · {basemapName} · Canvas renderer</div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button type="button" onClick={() => setShowAirports((value) => !value)} className="rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-xs text-[var(--muted)] hover:text-white">{showAirports ? "Hide airports" : "Show airports"}</button>
@@ -490,11 +514,11 @@ export function NetworkMap({ airline, results, onPlanRoute }: Props) {
       <div className="grid lg:grid-cols-[minmax(0,1fr)_320px]">
         <div className="relative min-h-[560px] border-b border-[var(--border)] lg:border-b-0 lg:border-r">
           <div ref={containerRef} className="absolute inset-0" aria-label="Interactive airline network map" />
-          <div className="pointer-events-none absolute bottom-3 left-3 z-[500] flex flex-wrap gap-2 rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-[11px] text-slate-200 backdrop-blur">
-            <span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-amber-300" />Hub</span>
-            <span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-sky-400" />Network</span>
-            <span><i className="mr-1 inline-block h-0.5 w-3 bg-green-400 align-middle" />Profit</span>
-            <span><i className="mr-1 inline-block h-0.5 w-3 bg-rose-400 align-middle" />Loss</span>
+          <div className="pointer-events-none absolute bottom-3 left-3 z-[500] flex flex-wrap gap-2 rounded-lg border border-slate-300/80 bg-white/90 px-3 py-2 text-[11px] text-slate-800 shadow-sm backdrop-blur">
+            <span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-amber-400" />Hub</span>
+            <span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-sky-500" />Network</span>
+            <span><i className="mr-1 inline-block h-0.5 w-3 bg-green-600 align-middle" />Profit</span>
+            <span><i className="mr-1 inline-block h-0.5 w-3 bg-rose-600 align-middle" />Loss</span>
           </div>
         </div>
 
