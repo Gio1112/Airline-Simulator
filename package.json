@@ -13,7 +13,7 @@
   "dependencies": {
     "@supabase/ssr": "latest",
     "@supabase/supabase-js": "latest",
-    "maplibre-gl": "latest",
+    "maplibre-gl": "5.24.0",
     "next": "latest",
     "react": "latest",
     "react-dom": "latest",
