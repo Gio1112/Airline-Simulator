@@ -14,6 +14,7 @@
     "@supabase/ssr": "latest",
     "@supabase/supabase-js": "latest",
     "leaflet": "1.9.4",
+    "lucide-react": "latest",
     "next": "latest",
     "protomaps-leaflet": "5.1.0",
     "react": "latest",
